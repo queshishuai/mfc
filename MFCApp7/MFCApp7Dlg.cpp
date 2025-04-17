@@ -2,15 +2,19 @@
 // MFCApp7Dlg.cpp: 实现文件
 //
 
+
 #include "pch.h"
 #include "framework.h"
 #include "MFCApp7.h"
 #include "MFCApp7Dlg.h"
 #include "afxdialogex.h"
-#include <sstream>
-#include <iomanip>
+#include <stdio.h>
+#include <stdint.h>
+#include <iostream>
 #include <fstream>
 #include <string>
+#include <iomanip>
+#include <sstream>
 #include "./inc/interface_fapi_pusch.h"
 #include "./inc/reflection.h"
 #include "./inc/pretty_json.h"
@@ -124,9 +128,12 @@ BOOL CMFCApp7Dlg::OnInitDialog()
 
 	// TODO: 在此添加额外的初始化代码
 	m_cdx.AddString(_T("bin_hex"));
-	m_cdx.AddString(_T("pusch抓数解析"));
-	m_cdx.AddString(_T("BinLog解析"));
+	m_cdx.AddString(_T("230_pusch抓数解析"));
+	m_cdx.AddString(_T("230_BinLog解析"));
 	m_cdx.AddString(_T("ide_hex"));
+	m_cdx.AddString(_T("RTN_抓数解析0.1滚降"));
+	m_cdx.AddString(_T("RTN_抓数解析0.2滚降"));
+	m_cdx.AddString(_T("RTN_binLog解析"));
 
 	m_cdx.SetCurSel(0);
 
@@ -484,6 +491,28 @@ void CMFCApp7Dlg::OnBnClickedButton2()
 			}
 			break;
 		}
+		case 4: //RTN_抓数解析0.1滚降
+		{
+		}
+		case 5: //RTN_抓数解析0.2滚降
+		{
+			for (int i = 0; i < m_strFilePathAndName.size(); ++i)
+			{//读取文件
+				void* buffer = ReadFileToBuffer(m_strFilePathAndName[i], fileSize);
+				if (buffer != nullptr)
+				{
+					// 创建文件夹
+					m_outputDirectoryPath = m_strFilePath + _T("\\") + m_strFileName[i].Left(m_strFileName[i].ReverseFind('.'));
+					if (createDirectory(m_outputDirectoryPath))
+					{
+						// 处理 buffer
+						parse_rtn_catch_log(buffer);
+					}
+					free(buffer);
+				}
+			}
+			break;
+		}
 		default:
 			break;
 		}
@@ -553,6 +582,19 @@ void CMFCApp7Dlg::writeFile(const CString& filePath, const std::string& content)
 	file.Close();
 }
 
+void CMFCApp7Dlg::writeBinFile(const CString& filePath, char* buf, size_t size)
+{
+	CFile file;
+	if (!file.Open(filePath, CFile::modeCreate | CFile::modeWrite | CFile::typeBinary))
+	{
+		AfxMessageBox(_T("无法打开文件进行写入"));
+		return;
+	}
+
+	file.Write(buf, static_cast<UINT>(size));
+	file.Close();
+}
+
 void CMFCApp7Dlg::appendToFile(const CString& filePath, const std::string& content)
 {
 	CFile file;
@@ -568,12 +610,13 @@ void CMFCApp7Dlg::appendToFile(const CString& filePath, const std::string& conte
 }
 
 
-// 将 int 转换为十六进制字符串的函数
+//#include <iomanip> // Add this include directive at the top of the file
+
 std::string intToHexString(int value)
 {
-	std::stringstream ss;
-	ss << "0x" << std::setw(8) << std::setfill('0') << std::hex << value;
-	return ss.str();
+    std::stringstream ss;
+    ss << "0x" << std::setw(8) << std::setfill('0') << std::hex << value;
+    return ss.str();
 }
 // 示例调用 intToHexString 函数
 void CMFCApp7Dlg::bin2hex(CString& filename, void* p_buffer, size_t size)
@@ -597,28 +640,305 @@ void CMFCApp7Dlg::bin2hex(CString& filename, void* p_buffer, size_t size)
 	return;
 }
 
+//#include <fstream> // Add this include directive at the top of the file
+
 void CMFCApp7Dlg::ide2hex(CString& dstfilename, CString& srcfilename)
 {
-	std::ifstream rfile(CT2A(srcfilename.GetString()));
-	if (!rfile.is_open())
+    std::ifstream rfile(CT2A(srcfilename.GetString())); // Ensure the correct conversion
+    if (!rfile.is_open())
+    {
+        AfxMessageBox(_T("无法打开源文件进行读取"));
+        return;
+    }
+
+    std::ofstream wfile(CT2A(dstfilename.GetString()));
+    if (!wfile.is_open())
+    {
+        AfxMessageBox(_T("无法打开目标文件进行写入"));
+        return;
+    }
+    std::string line;
+    while(std::getline(rfile,line))
+    {
+        // 处理每一行数据
+        wfile << "0x" << line.substr(line.size()-8) << ',' << std::endl;
+    }
+
+    rfile.close();
+    wfile.close();
+}
+
+#define CATCH_BASE_OFFSET               0x100
+#define CATCH_PARA_LENGTH               0x400
+#define CATCH_PAYLOAD_LENGTH            0xD000
+#define CATCH_DATA_LENGTH               800000
+
+#define DDR_TX_CATCH_FLAG_ADDR          (0x6d000000)
+#define DDR_TX_CATCH_BASE_ADDR          (0x6d000100)
+#define DDR_TX_CATCH_PARA_ADDR          (DDR_TX_CATCH_BASE_ADDR)
+#define DDR_TX_CATCH_PAYLOAD_ADDR       (DDR_TX_CATCH_PARA_ADDR + 0x400)
+#define DDR_TX_CATCH_DATA_ADDR          (DDR_TX_CATCH_PAYLOAD_ADDR + 0xD000)
+#define DDR_TX_CATCH_DATA_END_ADDR      (DDR_TX_CATCH_DATA_ADDR + 800000)
+
+typedef struct
+{
+	uint8_t slot_type;
+	uint8_t slot_index;
+	uint8_t first_flag;
+	uint8_t last_flag;
+
+	uint16_t wave_id;
+	uint16_t data_length;
+
+	uint32_t data_offset;
+} tx_pdu_info_t;
+
+typedef struct
+{
+	uint16_t ms_cnt;
+	//uint16_t rsv;
+	uint8_t roll_off;//0:0.25,1:0.2,2:0.15,3:0.1
+	uint8_t freqIndex;//18表示不搬频
+
+	uint8_t sche_flag;
+	uint8_t data_flag;
+	uint8_t pdu_num;
+	uint8_t slot_num;
+
+	uint32_t data_base_addr;
+	uint32_t slot_symb_offset[24];
+
+	tx_pdu_info_t pdu[88];
+} interface_rtn_rx_config_t;
+typedef struct
+{
+	uint16_t ms_cnt;
+	uint16_t rsv;
+
+	uint8_t sche_flag;
+	uint8_t data_flag;
+	uint8_t pdu_num;
+	uint8_t slot_num;
+
+	uint32_t data_base_addr;
+	uint32_t slot_symb_offset[18];
+
+	tx_pdu_info_t pdu[88];
+} interface_rtn_rx_config_rolloff02_t;
+
+REFLECTION(tx_pdu_info_t, slot_type, slot_index, first_flag, last_flag, wave_id, data_length, data_offset);
+REFLECTION(interface_rtn_rx_config_t, ms_cnt, roll_off, freqIndex, sche_flag, data_flag, pdu_num, slot_num, data_base_addr, slot_symb_offset, pdu);
+REFLECTION(interface_rtn_rx_config_rolloff02_t, ms_cnt, rsv, sche_flag, data_flag, pdu_num, slot_num, data_base_addr, slot_symb_offset, pdu);
+void CMFCApp7Dlg::RTN_para_print(void* p_buffer)
+{
+	std::string str;
+	interface_rtn_rx_config_t* p_rtn_para = (interface_rtn_rx_config_t*)p_buffer;
+	interface_rtn_rx_config_rolloff02_t* p_rtn_para_rolloff02 = (interface_rtn_rx_config_rolloff02_t*)p_buffer;
+	if (4 == m_cdx.GetCurSel())
 	{
-		AfxMessageBox(_T("无法打开源文件进行读取"));
+		to_json(*p_rtn_para, str);
+	}
+	else if (5 == m_cdx.GetCurSel())
+	{
+		to_json(*p_rtn_para_rolloff02, str);
+	}
+	else
+	{
+		AfxMessageBox(_T("参数错误"));
+	}
+	
+	std::string pretty_str;
+	pretty_json_string(str, pretty_str);
+	writeFile(m_outputDirectoryPath + _T("\\para_parse.json"), pretty_str);//写文件
+
+	return;
+}
+
+void CMFCApp7Dlg::RTN_payload_print(void* p_buffer)
+{
+	int i, j, k;
+	if (4 == m_cdx.GetCurSel())
+	{
+		interface_rtn_rx_config_t* p_rtn_para = (interface_rtn_rx_config_t*)((char*)p_buffer - (DDR_TX_CATCH_PAYLOAD_ADDR - DDR_TX_CATCH_PARA_ADDR));
+		char* p_payload = (char*)p_buffer;
+		uint32 last_valid_pdu_index = 0;
+		size_t size;
+
+		if(0 != p_rtn_para->pdu_num)
+		{
+			for (i = 0; i < p_rtn_para->pdu_num; ++i)
+			{
+				if (0 != p_rtn_para->pdu[i].data_length)
+				{
+					last_valid_pdu_index = i;
+				}
+			}
+			size = p_rtn_para->pdu[last_valid_pdu_index].data_offset + p_rtn_para->pdu[last_valid_pdu_index].data_length;
+			writeBinFile(m_outputDirectoryPath + _T("\\") + _T("pdu_payload.bin"),(char *)p_buffer,size);//写文件
+
+			std::string path = CT2A(m_outputDirectoryPath);
+			std::string write_file_name_hex = path + "\\pdu_payload_hex.dat";
+			std::ofstream os;
+			os.open(write_file_name_hex, std::ios::out);
+			if (!os)
+			{
+				std::cout << write_file_name_hex << "file open err!\n";
+			}
+			int* ptr = (int*)((char*)(p_buffer)+16);
+			for (j = 0; j < size; j += 4)
+			{
+				os << "0x";
+				os << std::setw(8) << std::setfill('0') << std::hex << *(ptr++) << ',' << std::endl;
+			}
+			os.close();
+		}
+		
+
+		for (i = 0; i < p_rtn_para->pdu_num; ++i)
+		{
+			if ((p_rtn_para->pdu[i].wave_id == 0) || (0 == p_rtn_para->pdu[i].data_length))
+			{
+				continue;
+			}
+			std::string str;
+			for (j = p_rtn_para->pdu[i].data_offset; j < p_rtn_para->pdu[i].data_offset + p_rtn_para->pdu[i].data_length; ++j)
+			{
+				for (k = 0; k < 8; ++k)
+				{
+					str += std::to_string((p_payload[j + 16] >> k) & 1);
+					str.append("\n");
+				}
+			}
+
+			writeFile(m_outputDirectoryPath + _T("\\") + _T("pdu_") + CString(std::to_wstring(i).c_str()) + _T("_payload.dat"), str);//写文件
+
+			std::string path = CT2A(m_outputDirectoryPath);
+			std::string write_file_name_hex = path + "\\pdu_" + std::to_string(i) + "_payload_hex.dat";
+			std::ofstream os;
+			os.open(write_file_name_hex, std::ios::out);
+			if (!os)
+			{
+				std::cout << write_file_name_hex << "file open err!\n";
+			}
+			int* ptr = (int*)&p_payload[16 + p_rtn_para->pdu[i].data_offset];
+			for (j = p_rtn_para->pdu[i].data_offset; j < p_rtn_para->pdu[i].data_offset + p_rtn_para->pdu[i].data_length; j += 4)
+			{
+				os << "0x";
+				os << std::setw(8) << std::setfill('0') << std::hex << *(ptr++) << ',' << std::endl;
+			}
+			os.close();
+		}
+	}
+	else if (5 == m_cdx.GetCurSel())
+	{
+		interface_rtn_rx_config_rolloff02_t* p_rtn_para = (interface_rtn_rx_config_rolloff02_t*)((char*)p_buffer - (DDR_TX_CATCH_PAYLOAD_ADDR - DDR_TX_CATCH_PARA_ADDR));
+		char* p_payload = (char*)p_buffer;
+		uint32 last_valid_pdu_index = 0;
+		size_t size;
+
+		if (0 != p_rtn_para->pdu_num)
+		{
+			for (i = 0; i < p_rtn_para->pdu_num; ++i)
+			{
+				if (0 != p_rtn_para->pdu[i].data_length)
+				{
+					last_valid_pdu_index = i;
+				}
+			}
+			size = p_rtn_para->pdu[last_valid_pdu_index].data_offset + p_rtn_para->pdu[last_valid_pdu_index].data_length;
+			writeBinFile(m_outputDirectoryPath + _T("\\") + _T("pdu_payload.bin"), (char*)(p_buffer)+16, size);//写文件
+
+			std::string path = CT2A(m_outputDirectoryPath);
+			std::string write_file_name_hex = path + "\\pdu_payload_hex.dat";
+			std::ofstream os;
+			os.open(write_file_name_hex, std::ios::out);
+			if (!os)
+			{
+				std::cout << write_file_name_hex << "file open err!\n";
+			}
+			int* ptr = (int*)((char*)(p_buffer)+16);
+			for (j = 0; j<size; j += 4)
+			{
+				os << "0x";
+				os << std::setw(8) << std::setfill('0') << std::hex << *(ptr++) << ',' << std::endl;
+			}
+			os.close();
+		}
+
+		for (i = 0; i < p_rtn_para->pdu_num; ++i)
+		{
+			if ((p_rtn_para->pdu[i].wave_id == 0) || (0 == p_rtn_para->pdu[i].data_length))
+			{
+				continue;
+			}
+			std::string str;
+			for (j = p_rtn_para->pdu[i].data_offset; j < p_rtn_para->pdu[i].data_offset + p_rtn_para->pdu[i].data_length; ++j)
+			{
+				for (k = 0; k < 8; ++k)
+				{
+					str += std::to_string((p_payload[j + 16] >> k) & 1);
+					str.append("\n");
+				}
+			}
+
+			writeFile(m_outputDirectoryPath + _T("\\") + _T("pdu_") + CString(std::to_wstring(i).c_str()) + _T("_payload.dat"), str);//写文件
+
+			std::string path = CT2A(m_outputDirectoryPath);
+			std::string write_file_name_hex = path + "\\pdu_" + std::to_string(i) + "_payload_hex.dat";
+			std::ofstream os;
+			os.open(write_file_name_hex, std::ios::out);
+			if (!os)
+			{
+				std::cout << write_file_name_hex << "file open err!\n";
+			}
+			int* ptr = (int*)&p_payload[16 + p_rtn_para->pdu[i].data_offset];
+			for (j = p_rtn_para->pdu[i].data_offset; j < p_rtn_para->pdu[i].data_offset + p_rtn_para->pdu[i].data_length; j += 4)
+			{
+				os << "0x";
+				os << std::setw(8) << std::setfill('0') << std::hex << *(ptr++) << ',' << std::endl;
+			}
+			os.close();
+		}
+	}
+	
+
+	return;
+}
+
+void CMFCApp7Dlg::RTN_data_print(void* p_buffer)
+{
+	int i;
+	std::string str;
+	int* ptr = (int*)((char*)p_buffer);
+
+	std::string path = CT2A(m_outputDirectoryPath);
+	std::string write_file_name = path + "\\data.log";
+	std::ofstream os;
+	os.open(write_file_name, std::ios::out);
+	if (!os)
+	{
+		std::cout << write_file_name << " file open err!\n";
 		return;
 	}
+	os << str;
 
-	std::ofstream wfile(CT2A(dstfilename.GetString()));
-	if (!wfile.is_open())
+	for (i = 0; i < 800000 / 4; ++i)
 	{
-		AfxMessageBox(_T("无法打开目标文件进行写入"));
-		return;
+		os << "0x";
+		os << std::setw(8) << std::setfill('0') << std::hex << *(ptr++) << ',' << std::endl;
 	}
-	std::string line;
-	while(std::getline(rfile,line))
-	{
-		// 处理每一行数据
-		wfile << "0x" << line.substr(line.size()-8) << ',' << std::endl;
-	}
+	os.close();
 
-	rfile.close();
-	wfile.close();
+	return;
+}
+
+void CMFCApp7Dlg::parse_rtn_catch_log(void* p_buffer)
+{
+	char* p_buffer1 = (char *)p_buffer;
+	p_buffer1 += (DDR_TX_CATCH_BASE_ADDR - DDR_TX_CATCH_FLAG_ADDR);//0x100
+	RTN_para_print(p_buffer1);
+	p_buffer1 += (DDR_TX_CATCH_PAYLOAD_ADDR - DDR_TX_CATCH_BASE_ADDR);//0x400
+	RTN_payload_print(p_buffer1);
+	p_buffer1 += (DDR_TX_CATCH_DATA_ADDR - DDR_TX_CATCH_PAYLOAD_ADDR);//0xd000
+	RTN_data_print(p_buffer1);
 }

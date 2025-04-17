@@ -42,6 +42,7 @@ public:
 	BOOL createDirectory(const CString& directoryPath);
 	void* ReadFileToBuffer(const CString& filePath, size_t& fileSize);
 	void writeFile(const CString& filePath, const std::string& content);
+	void writeBinFile(const CString& filePath, char* buf, size_t size);
 	void appendToFile(const CString& filePath, const std::string& content);
 	std::vector<CString> m_strFilePathAndName;//文件名包含路径
 	CString m_strFilePath;//文件路径
@@ -52,4 +53,10 @@ public:
 	void parse_pusch_catch_log(void* p_buffer);
 	void bin2hex(CString& filename, void* p_buffer, size_t size);
 	void ide2hex(CString& dstfilename, CString& srcfilename);
+
+	//rtn 抓数解析
+	void RTN_para_print(void* p_buffer);
+	void RTN_payload_print(void* p_buffer);
+	void RTN_data_print(void* p_buffer);
+	void parse_rtn_catch_log(void* p_buffer);
 };
