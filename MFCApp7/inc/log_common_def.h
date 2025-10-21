@@ -4,7 +4,7 @@
 #include    "type_define.h"
 
 
-//此处定义消息号  各模块消息号定义在对应注释之后，并保证在注释要求的范围内
+//此处定义消息号  各模块消息号定义在对应注释之后，并保证在注释要求的范围内1
 //STRING_LOG   0
 #if 0
 typedef signed char		int8_t;
